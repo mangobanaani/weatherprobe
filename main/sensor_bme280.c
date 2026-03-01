@@ -21,6 +21,7 @@ typedef struct {
 
 static bme280_calib_t cal;
 static int32_t t_fine;
+static bool s_calibrated = false;
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val)
 {
@@ -33,10 +34,11 @@ static esp_err_t reg_read(uint8_t reg, uint8_t *out, size_t len)
     return i2c_master_transmit_receive(s_dev, &reg, 1, out, len, 100);
 }
 
-static void read_calibration(void)
+static esp_err_t read_calibration(void)
 {
     uint8_t buf[26];
-    reg_read(0x88, buf, 26);
+    esp_err_t err = reg_read(0x88, buf, 26);
+    if (err != ESP_OK) return err;
 
     cal.dig_T1 = (uint16_t)(buf[1] << 8 | buf[0]);
     cal.dig_T2 = (int16_t)(buf[3] << 8 | buf[2]);
@@ -52,16 +54,19 @@ static void read_calibration(void)
     cal.dig_P9 = (int16_t)(buf[23] << 8 | buf[22]);
 
     uint8_t h1;
-    reg_read(0xA1, &h1, 1);
+    err = reg_read(0xA1, &h1, 1);
+    if (err != ESP_OK) return err;
     cal.dig_H1 = h1;
 
     uint8_t hbuf[7];
-    reg_read(0xE1, hbuf, 7);
+    err = reg_read(0xE1, hbuf, 7);
+    if (err != ESP_OK) return err;
     cal.dig_H2 = (int16_t)(hbuf[1] << 8 | hbuf[0]);
     cal.dig_H3 = hbuf[2];
     cal.dig_H4 = (int16_t)((int16_t)hbuf[3] << 4 | (hbuf[4] & 0x0F));
     cal.dig_H5 = (int16_t)((int16_t)hbuf[5] << 4 | (hbuf[4] >> 4));
     cal.dig_H6 = (int8_t)hbuf[6];
+    return ESP_OK;
 }
 
 static int32_t compensate_T(int32_t adc_T)
@@ -137,13 +142,22 @@ void bme280_init(void)
     reg_write(0xE0, 0xB6);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    read_calibration();
-    ESP_LOGI(TAG, "Initialized");
+    if (read_calibration() == ESP_OK) {
+        s_calibrated = true;
+        ESP_LOGI(TAG, "Initialized");
+    } else {
+        ESP_LOGE(TAG, "Calibration read failed");
+    }
 }
 
 bme280_reading_t bme280_read(void)
 {
     bme280_reading_t r = {0};
+
+    if (!s_calibrated) {
+        ESP_LOGE(TAG, "Not calibrated");
+        return r;
+    }
 
     // Trigger forced measurement: osrs_h=x1, osrs_t=x1, osrs_p=x1, mode=forced
     reg_write(0xF2, 0x01);

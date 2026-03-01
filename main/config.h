@@ -6,7 +6,7 @@
 #define WIFI_PASS           "YOUR_PASSWORD"
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
-// MQTT
+// MQTT - for production, embed CA cert and set broker.verification.certificate
 #define MQTT_BROKER_URI     "mqtts://broker.hivemq.com:8883"
 #define MQTT_USERNAME       "your_user"
 #define MQTT_PASSWORD       "your_pass"

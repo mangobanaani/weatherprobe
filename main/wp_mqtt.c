@@ -94,6 +94,7 @@ bool wifi_connect(void)
                                             pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
     if (!(bits & WIFI_CONNECTED_BIT)) {
         ESP_LOGE(TAG, "WiFi connect timeout");
+        wifi_disconnect();
         return false;
     }
     return true;
@@ -131,6 +132,7 @@ bool mqtt_connect(void)
                                             pdMS_TO_TICKS(10000));
     if (!(bits & MQTT_CONNECTED_BIT)) {
         ESP_LOGE(TAG, "MQTT connect timeout");
+        mqtt_disconnect();
         return false;
     }
     return true;

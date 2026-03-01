@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "esp_sntp.h"
 #include "config.h"
 #include "sensor_bme280.h"
 #include "sensor_gps.h"
@@ -17,6 +18,26 @@ RTC_DATA_ATTR static uint32_t boot_count = 0;
 RTC_DATA_ATTR static double last_lat = 0.0;
 RTC_DATA_ATTR static double last_lon = 0.0;
 RTC_DATA_ATTR static float last_alt = 0.0f;
+
+static void sync_time(void)
+{
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    int retry = 0;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && retry < 10) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        retry++;
+    }
+    esp_sntp_stop();
+
+    if (retry >= 10) {
+        ESP_LOGW(TAG, "SNTP sync failed");
+    } else {
+        ESP_LOGI(TAG, "Time synchronized");
+    }
+}
 
 static int format_payload(char *buf, size_t size,
                            const bme280_reading_t *bme,
@@ -36,7 +57,7 @@ static int format_payload(char *buf, size_t size,
         "\"battery_v\":%.2f,"
         "\"gps_fix\":%s}",
         DEVICE_ID,
-        (long long)(esp_timer_get_time() / 1000000),
+        (long long)time(NULL),
         bme->temperature_c,
         bme->humidity_pct,
         bme->pressure_hpa,
@@ -70,16 +91,26 @@ void app_main(void)
     battery_init();
     battery_reading_t batt = battery_read();
 
-    // 2. Format payload
-    char payload[512];
-    int len = format_payload(payload, sizeof(payload), &bme, &gps, &batt);
-
-    // 3. Init SPIFFS buffer
+    // 2. Init SPIFFS buffer
     buffer_init();
 
-    // 4. Connect and publish
+    // 3. Connect WiFi and sync time
+    bool wifi_ok = wifi_connect();
+    if (wifi_ok) {
+        sync_time();
+    }
+
+    // 4. Format payload (now has correct timestamp if SNTP succeeded)
+    char payload[512];
+    int len = format_payload(payload, sizeof(payload), &bme, &gps, &batt);
+    if (len < 0 || (size_t)len >= sizeof(payload)) {
+        ESP_LOGE(TAG, "Payload format error or too large (%d)", len);
+        len = (int)strlen(payload);
+    }
+
+    // 5. Connect MQTT, publish, drain
     bool sent = false;
-    if (wifi_connect()) {
+    if (wifi_ok) {
         if (mqtt_connect()) {
             // Send current reading
             sent = mqtt_publish(payload, len);
@@ -105,13 +136,13 @@ void app_main(void)
         wifi_disconnect();
     }
 
-    // 5. Buffer if send failed
+    // 6. Buffer if send failed
     if (!sent) {
         ESP_LOGW(TAG, "Publish failed, buffering locally");
         buffer_write(payload, len);
     }
 
-    // 6. Sleep
+    // 7. Sleep
     ESP_LOGI(TAG, "Sleeping for %llu us", SLEEP_DURATION_US);
     esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
     esp_deep_sleep_start();
