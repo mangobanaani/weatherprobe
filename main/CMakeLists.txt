@@ -3,4 +3,5 @@ idf_component_register(
          "data_buffer.c" "wp_mqtt.c"
     INCLUDE_DIRS "."
     REQUIRES driver esp_wifi nvs_flash esp_event mqtt spiffs esp_adc esp_timer esp_netif_sntp
+    EMBED_TXTFILES "certs/isrg_root_x1.pem"
 )

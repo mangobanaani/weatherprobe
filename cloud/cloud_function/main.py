@@ -1,49 +1,44 @@
 import json
+import logging
 import os
-import threading
 
 import functions_framework
-import paho.mqtt.client as mqtt
 from google.cloud import pubsub_v1
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "8883"))
-MQTT_USER = os.environ.get("MQTT_USER", "")
-MQTT_PASS = os.environ.get("MQTT_PASS", "")
-MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "weatherprobe/#")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "")
 PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC", "weatherprobe-readings")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 publisher = pubsub_v1.PublisherClient()
 topic_path = publisher.topic_path(GCP_PROJECT, PUBSUB_TOPIC)
 
 
-def on_message(client, userdata, msg):
-    try:
-        payload = msg.payload.decode("utf-8")
-        json.loads(payload)
-        future = publisher.publish(topic_path, payload.encode("utf-8"))
-        future.result(timeout=10)
-        print(f"Published to Pub/Sub: {msg.topic}")
-    except Exception as e:
-        print(f"Error forwarding message: {e}")
-
-
-def start_mqtt():
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set()
-    client.on_message = on_message
-    client.connect(MQTT_BROKER, MQTT_PORT)
-    client.subscribe(MQTT_TOPIC, qos=1)
-    client.loop_forever()
-
-
 @functions_framework.http
-def health(request):
+def ingest(request):
+    """Receives MQTT messages forwarded by HiveMQ Data Hub webhook."""
+    if WEBHOOK_SECRET and request.headers.get("X-Webhook-Secret") != WEBHOOK_SECRET:
+        return "Unauthorized", 401
+
+    body = request.get_data(as_text=True)
+    if not body:
+        return "Empty body", 400
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return "Invalid JSON", 400
+
+    # HiveMQ webhook wraps the payload; extract it if nested
+    payload = data.get("payload", data)
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+
+    payload_bytes = json.dumps(payload).encode("utf-8")
+    future = publisher.publish(topic_path, payload_bytes)
+    future.result(timeout=10)
+
+    log.info("Published %d bytes to Pub/Sub", len(payload_bytes))
     return "OK", 200
-
-
-mqtt_thread = threading.Thread(target=start_mqtt, daemon=True)
-mqtt_thread.start()

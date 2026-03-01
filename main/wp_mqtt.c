@@ -10,6 +10,9 @@
 
 static const char *TAG = "MQTT";
 
+extern const uint8_t mqtt_ca_pem_start[] asm("_binary_isrg_root_x1_pem_start");
+extern const uint8_t mqtt_ca_pem_end[]   asm("_binary_isrg_root_x1_pem_end");
+
 #define WIFI_CONNECTED_BIT BIT0
 #define MQTT_CONNECTED_BIT BIT0
 #define MQTT_PUBLISHED_BIT BIT1
@@ -113,7 +116,10 @@ bool mqtt_connect(void)
     s_mqtt_eg = xEventGroupCreate();
 
     const esp_mqtt_client_config_t cfg = {
-        .broker.address.uri = MQTT_BROKER_URI,
+        .broker = {
+            .address.uri = MQTT_BROKER_URI,
+            .verification.certificate = (const char *)mqtt_ca_pem_start,
+        },
         .credentials = {
             .username = MQTT_USERNAME,
             .authentication.password = MQTT_PASSWORD,
