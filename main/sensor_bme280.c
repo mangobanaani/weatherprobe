@@ -188,3 +188,9 @@ bme280_reading_t bme280_read(void)
              r.temperature_c, r.humidity_pct, r.pressure_hpa);
     return r;
 }
+
+void bme280_deinit(void)
+{
+    i2c_master_bus_rm_device(s_dev);
+    i2c_del_master_bus(s_bus);
+}

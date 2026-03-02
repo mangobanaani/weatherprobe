@@ -10,4 +10,6 @@ int  buffer_count(void);
 bool buffer_peek(char *out, size_t out_size);
 void buffer_pop(void);
 
+void buffer_deinit(void);
+
 #endif

@@ -69,3 +69,12 @@ battery_reading_t battery_read(void)
     ESP_LOGI(TAG, "%.2fV (%d%%)", r.voltage, r.percentage);
     return r;
 }
+
+void battery_deinit(void)
+{
+    adc_oneshot_del_unit(s_adc);
+    if (s_cali) {
+        adc_cali_delete_scheme_line_fitting(s_cali);
+        s_cali = NULL;
+    }
+}

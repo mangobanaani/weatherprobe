@@ -9,4 +9,6 @@ typedef struct {
 void battery_init(void);
 battery_reading_t battery_read(void);
 
+void battery_deinit(void);
+
 #endif

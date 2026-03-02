@@ -106,6 +106,9 @@ void app_main(void)
     battery_init();
     battery_reading_t batt = battery_read();
 
+    bme280_deinit();
+    battery_deinit();
+
     // 3. Init SPIFFS buffer
     buffer_init();
 
@@ -157,6 +160,8 @@ void app_main(void)
         ESP_LOGW(TAG, "Publish failed, buffering locally");
         buffer_write(payload, len);
     }
+
+    buffer_deinit();
 
 sleep:
     // 8. Sleep

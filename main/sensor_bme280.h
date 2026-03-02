@@ -13,4 +13,6 @@ typedef struct {
 void bme280_init(void);
 bme280_reading_t bme280_read(void);
 
+void bme280_deinit(void);
+
 #endif

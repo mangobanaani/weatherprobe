@@ -25,6 +25,7 @@ static bool nmea_checksum_ok(const char *sentence)
     uint8_t crc = 0;
     while (*p && *p != '*') crc ^= (uint8_t)*p++;
     if (*p != '*') return false;
+    if (p[1] == '\0' || p[2] == '\0') return false;
     char hex[3] = {p[1], p[2], 0};
     return crc == (uint8_t)strtol(hex, NULL, 16);
 }

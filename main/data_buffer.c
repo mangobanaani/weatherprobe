@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 static const char *TAG = "BUFFER";
 
@@ -40,6 +41,10 @@ bool buffer_write(const char *json, size_t len)
         return false;
     }
 
+    if (len > UINT16_MAX) {
+        ESP_LOGE(TAG, "Entry too large: %d", (int)len);
+        return false;
+    }
     uint16_t slen = (uint16_t)len;
     fwrite(&slen, sizeof(slen), 1, f);
     fwrite(json, 1, len, f);
@@ -123,4 +128,9 @@ void buffer_pop(void)
         fclose(f);
     }
     free(tmp);
+}
+
+void buffer_deinit(void)
+{
+    esp_vfs_spiffs_unregister(SPIFFS_PARTITION);
 }
