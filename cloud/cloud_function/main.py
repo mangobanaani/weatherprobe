@@ -34,11 +34,18 @@ def ingest(request):
     # HiveMQ webhook wraps the payload; extract it if nested
     payload = data.get("payload", data)
     if isinstance(payload, str):
-        payload = json.loads(payload)
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return "Invalid nested JSON payload", 400
 
     payload_bytes = json.dumps(payload).encode("utf-8")
-    future = publisher.publish(topic_path, payload_bytes)
-    future.result(timeout=10)
+    try:
+        future = publisher.publish(topic_path, payload_bytes)
+        future.result(timeout=10)
+    except Exception:
+        log.exception("Pub/Sub publish failed")
+        return "Publish failed", 503
 
     log.info("Published %d bytes to Pub/Sub", len(payload_bytes))
     return "OK", 200

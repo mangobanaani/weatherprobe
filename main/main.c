@@ -5,6 +5,7 @@
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_sntp.h"
+#include "nvs_flash.h"
 #include "config.h"
 #include "credentials.h"
 #include "sensor_bme280.h"
@@ -75,7 +76,13 @@ void app_main(void)
     boot_count++;
     ESP_LOGI(TAG, "Boot #%lu", (unsigned long)boot_count);
 
-    // 1. Load credentials from NVS
+    // 1. Init NVS and load credentials
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
     device_credentials_t creds;
     if (!credentials_load(&creds)) {
         ESP_LOGE(TAG, "No credentials in NVS, sleeping");
@@ -112,8 +119,8 @@ void app_main(void)
     char payload[512];
     int len = format_payload(payload, sizeof(payload), &bme, &gps, &batt);
     if (len < 0 || (size_t)len >= sizeof(payload)) {
-        ESP_LOGE(TAG, "Payload format error or too large (%d)", len);
-        len = (int)strlen(payload);
+        ESP_LOGE(TAG, "Payload format error or too large (%d), skipping", len);
+        goto sleep;
     }
 
     // 6. Publish
@@ -151,6 +158,7 @@ void app_main(void)
         buffer_write(payload, len);
     }
 
+sleep:
     // 8. Sleep
     ESP_LOGI(TAG, "Sleeping for %llu us", SLEEP_DURATION_US);
     esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
