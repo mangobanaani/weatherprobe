@@ -1,3 +1,12 @@
+/*
+ * credentials.c -- Load WiFi and MQTT credentials from NVS.
+ *
+ * The NVS namespace "creds" is populated by the provision.sh script,
+ * which interactively collects secrets from the user, generates a
+ * binary NVS partition image, and flashes it to the device.  This
+ * module simply reads those keys back at runtime.
+ */
+
 #include "credentials.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -6,6 +15,7 @@
 
 static const char *TAG = "CREDS";
 
+/* Helper -- read a single NVS string key into a fixed-size buffer */
 static bool read_str(nvs_handle_t h, const char *key, char *out, size_t max)
 {
     size_t len = max;

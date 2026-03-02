@@ -1,3 +1,16 @@
+/*
+ * sensor_gps.c -- NMEA GGA parser for a UART-connected GPS receiver.
+ *
+ * The driver installs a UART peripheral, then reads bytes in a loop
+ * assembling NMEA sentences.  Each complete sentence is validated with
+ * an XOR checksum and, if it is a GGA message with a valid fix, the
+ * latitude/longitude/altitude fields are parsed and returned.
+ *
+ * Coordinates arrive in DDMM.MMMM format and are converted to signed
+ * decimal degrees.  The driver deletes the UART when it is done to
+ * save power.
+ */
+
 #include "sensor_gps.h"
 #include "config.h"
 #include "driver/uart.h"
@@ -10,6 +23,10 @@
 
 static const char *TAG = "GPS";
 
+/*
+ * parse_ddmm -- Convert NMEA DDMM.MMMM to decimal degrees.
+ * E.g. "6010.1940" => 60 + 10.1940/60 = 60.16990
+ */
 static double parse_ddmm(const char *s)
 {
     if (!s || !*s) return 0.0;
@@ -18,6 +35,11 @@ static double parse_ddmm(const char *s)
     return deg + (raw - deg * 100) / 60.0;
 }
 
+/*
+ * nmea_checksum_ok -- Verify the XOR checksum between '$' and '*'.
+ * Returns true only if the computed checksum matches the two hex
+ * digits following the asterisk.
+ */
 static bool nmea_checksum_ok(const char *sentence)
 {
     if (sentence[0] != '$') return false;
@@ -30,6 +52,13 @@ static bool nmea_checksum_ok(const char *sentence)
     return crc == (uint8_t)strtol(hex, NULL, 16);
 }
 
+/*
+ * parse_gga -- Extract fields from a GGA sentence (checksum already
+ * stripped).  Populates the reading struct and returns true on success.
+ *
+ * GGA field order: talker+id, time, lat, N/S, lon, E/W, quality,
+ *                  sats, HDOP, alt, alt-unit, geoid-sep, ...
+ */
 static bool parse_gga(char *s, gps_reading_t *out)
 {
     char *fields[15];
@@ -38,21 +67,28 @@ static bool parse_gga(char *s, gps_reading_t *out)
         fields[n++] = tok;
     if (n < 10) return false;
 
+    /* UTC time -- HHMMSS.ss */
     double t = atof(fields[1]);
     out->hour = (uint8_t)(t / 10000);
     out->min = (uint8_t)((int)t % 10000 / 100);
     out->sec = (uint8_t)((int)t % 100);
 
+    /* Fix quality: 0 = no fix, 1 = GPS, 2 = DGPS, ... */
     int fix_quality = atoi(fields[6]);
     out->fix_valid = fix_quality > 0;
     out->satellites = (uint8_t)atoi(fields[7]);
+
+    /* Latitude / longitude in DDMM.MMMM, with N/S and E/W indicators */
     out->latitude = parse_ddmm(fields[2]);
     if (n > 3 && fields[3][0] == 'S') out->latitude = -out->latitude;
     out->longitude = parse_ddmm(fields[4]);
     if (n > 5 && fields[5][0] == 'W') out->longitude = -out->longitude;
+
     out->altitude_m = (float)atof(fields[9]);
     return true;
 }
+
+/* ---- Public API ---- */
 
 void gps_init(void)
 {
@@ -87,9 +123,10 @@ gps_reading_t gps_read(void)
                                   pdMS_TO_TICKS(100));
         if (len <= 0) continue;
 
+        /* Assemble NMEA sentences character by character */
         for (int i = 0; i < len; i++) {
             char c = (char)buf[i];
-            if (c == '$') line_pos = 0;
+            if (c == '$') line_pos = 0;           /* start of new sentence */
             if (line_pos < GPS_BUF_SIZE - 1) {
                 line[line_pos++] = c;
             }
@@ -101,6 +138,7 @@ gps_reading_t gps_read(void)
                     continue;
                 }
 
+                /* Only process GGA sentences (GPS or multi-constellation) */
                 if (strncmp(line, "$GPGGA", 6) == 0 ||
                     strncmp(line, "$GNGGA", 6) == 0) {
                     char tmp[GPS_BUF_SIZE];

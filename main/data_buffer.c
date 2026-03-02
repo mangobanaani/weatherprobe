@@ -1,3 +1,18 @@
+/*
+ * data_buffer.c -- SPIFFS ring buffer for offline sensor readings.
+ *
+ * Storage format (buffer.dat):
+ *   [ uint16_t length ][ JSON payload bytes ] ...
+ *
+ * buffer_write() appends to the file.  If BUFFER_MAX_ENTRIES is
+ * reached the oldest entry is popped first.
+ *
+ * buffer_pop() removes the first entry by reading the remaining
+ * bytes into a heap buffer and rewriting the file.  This is
+ * acceptable because at most BUFFER_MAX_ENTRIES (~50 KB) are
+ * stored and the operation runs only a few times per wake cycle.
+ */
+
 #include "data_buffer.h"
 #include "config.h"
 #include "esp_spiffs.h"
@@ -30,6 +45,7 @@ void buffer_init(void)
 
 bool buffer_write(const char *json, size_t len)
 {
+    /* Enforce the maximum entry count by dropping the oldest */
     if (buffer_count() >= BUFFER_MAX_ENTRIES) {
         ESP_LOGW(TAG, "Buffer full, dropping oldest");
         buffer_pop();
@@ -45,6 +61,8 @@ bool buffer_write(const char *json, size_t len)
         ESP_LOGE(TAG, "Entry too large: %d", (int)len);
         return false;
     }
+
+    /* Write length-prefixed record */
     uint16_t slen = (uint16_t)len;
     fwrite(&slen, sizeof(slen), 1, f);
     fwrite(json, 1, len, f);
@@ -89,11 +107,16 @@ bool buffer_peek(char *out, size_t out_size)
     return true;
 }
 
+/*
+ * buffer_pop -- Remove the first entry by rewriting the file with
+ * everything after it.  If only one entry exists the file is deleted.
+ */
 void buffer_pop(void)
 {
     FILE *f = fopen(BUFFER_FILE, "rb");
     if (!f) return;
 
+    /* Skip past the first record */
     uint16_t slen;
     if (fread(&slen, sizeof(slen), 1, f) != 1) {
         fclose(f);
@@ -113,6 +136,7 @@ void buffer_pop(void)
         return;
     }
 
+    /* Copy the tail into a temporary heap buffer and rewrite */
     char *tmp = malloc(remaining);
     if (!tmp) {
         fclose(f);

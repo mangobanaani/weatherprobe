@@ -1,3 +1,21 @@
+/*
+ * main.c -- WeatherProbe firmware entry point.
+ *
+ * Implements the deep-sleep wake cycle that runs every 5 minutes:
+ *   1. Read BME280 (temperature, humidity, pressure)
+ *   2. Read GPS   (latitude, longitude, altitude)
+ *   3. Read battery voltage via ADC
+ *   4. Connect WiFi, synchronise time via SNTP
+ *   5. Publish a JSON reading to the MQTT broker
+ *   6. Drain any previously buffered readings
+ *   7. If publish fails, store the reading in the SPIFFS ring buffer
+ *   8. Enter deep sleep
+ *
+ * RTC memory is used to preserve the boot counter and last-known GPS
+ * position across sleep cycles so that a reading can still include
+ * location data when the GPS module cannot obtain a fix.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -16,11 +34,16 @@
 
 static const char *TAG = "MAIN";
 
+/* RTC-retained state -- survives deep sleep */
 RTC_DATA_ATTR static uint32_t boot_count = 0;
 RTC_DATA_ATTR static double last_lat = 0.0;
 RTC_DATA_ATTR static double last_lon = 0.0;
 RTC_DATA_ATTR static float last_alt = 0.0f;
 
+/*
+ * sync_time -- Polls pool.ntp.org for up to 10 s to set the system clock.
+ * Called once per wake cycle immediately after WiFi association.
+ */
 static void sync_time(void)
 {
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
@@ -41,6 +64,15 @@ static void sync_time(void)
     }
 }
 
+/*
+ * format_payload -- Serialise all sensor readings into a JSON string.
+ *
+ * If the current GPS fix is invalid, the last-known coordinates stored
+ * in RTC memory are substituted so that every payload has a location.
+ *
+ * Returns the number of characters written (excluding the terminator),
+ * or a negative value on encoding error.
+ */
 static int format_payload(char *buf, size_t size,
                            const bme280_reading_t *bme,
                            const gps_reading_t *gps,
@@ -76,7 +108,7 @@ void app_main(void)
     boot_count++;
     ESP_LOGI(TAG, "Boot #%lu", (unsigned long)boot_count);
 
-    // 1. Init NVS and load credentials
+    /* 1. Initialise NVS and load WiFi/MQTT credentials */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
@@ -90,7 +122,7 @@ void app_main(void)
         esp_deep_sleep_start();
     }
 
-    // 2. Init and read sensors
+    /* 2. Read all sensors */
     bme280_init();
     bme280_reading_t bme = bme280_read();
 
@@ -109,16 +141,16 @@ void app_main(void)
     bme280_deinit();
     battery_deinit();
 
-    // 3. Init SPIFFS buffer
+    /* 3. Mount SPIFFS offline buffer */
     buffer_init();
 
-    // 4. Connect and sync time
+    /* 4. Bring up WiFi and synchronise the system clock */
     bool wifi_ok = wifi_connect(&creds);
     if (wifi_ok) {
         sync_time();
     }
 
-    // 5. Format payload
+    /* 5. Build JSON payload */
     char payload[512];
     int len = format_payload(payload, sizeof(payload), &bme, &gps, &batt);
     if (len < 0 || (size_t)len >= sizeof(payload)) {
@@ -126,7 +158,7 @@ void app_main(void)
         goto sleep;
     }
 
-    // 6. Publish
+    /* 6. Publish to MQTT; on success, drain buffered readings */
     char topic[128];
     snprintf(topic, sizeof(topic), MQTT_TOPIC_FMT, DEVICE_ID);
 
@@ -155,7 +187,7 @@ void app_main(void)
         wifi_disconnect();
     }
 
-    // 7. Buffer if send failed
+    /* 7. Store locally if the publish attempt failed */
     if (!sent) {
         ESP_LOGW(TAG, "Publish failed, buffering locally");
         buffer_write(payload, len);
@@ -164,7 +196,7 @@ void app_main(void)
     buffer_deinit();
 
 sleep:
-    // 8. Sleep
+    /* 8. Enter deep sleep until the next measurement interval */
     ESP_LOGI(TAG, "Sleeping for %llu us", SLEEP_DURATION_US);
     esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
     esp_deep_sleep_start();

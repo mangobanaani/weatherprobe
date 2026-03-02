@@ -1,3 +1,14 @@
+/*
+ * wp_mqtt.c -- WiFi station mode and MQTT-over-TLS client.
+ *
+ * WiFi uses the ESP-IDF event-driven model with a FreeRTOS event group
+ * to block until an IP address is obtained.  MQTT uses the esp-mqtt
+ * library with the built-in Mozilla CA bundle for TLS server
+ * verification.  Separate event groups track connection, publish-ack,
+ * and error states so that each operation can be given a bounded
+ * timeout.
+ */
+
 #include "wp_mqtt.h"
 #include "config.h"
 #include "esp_wifi.h"
@@ -11,6 +22,7 @@
 
 static const char *TAG = "MQTT";
 
+/* Event bits for synchronising asynchronous callbacks */
 #define WIFI_CONNECTED_BIT BIT0
 #define MQTT_CONNECTED_BIT BIT0
 #define MQTT_PUBLISHED_BIT BIT1
@@ -21,6 +33,8 @@ static EventGroupHandle_t s_mqtt_eg;
 static esp_mqtt_client_handle_t s_client;
 static char s_topic[128];
 static esp_netif_t *s_netif;
+
+/* ---- Event handlers ---- */
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                 int32_t id, void *data)
@@ -58,6 +72,8 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             break;
     }
 }
+
+/* ---- WiFi ---- */
 
 bool wifi_connect(const device_credentials_t *creds)
 {
@@ -107,6 +123,8 @@ void wifi_disconnect(void)
     vEventGroupDelete(s_wifi_eg);
 }
 
+/* ---- MQTT ---- */
+
 bool mqtt_connect(const device_credentials_t *creds, const char *topic)
 {
     s_mqtt_eg = xEventGroupCreate();
@@ -152,6 +170,7 @@ bool mqtt_publish(const char *payload, size_t len)
         return false;
     }
 
+    /* Wait for PUBACK (QoS 1) or an error, whichever comes first */
     EventBits_t bits = xEventGroupWaitBits(s_mqtt_eg,
                                             MQTT_PUBLISHED_BIT | MQTT_FAILED_BIT,
                                             pdTRUE, pdFALSE,

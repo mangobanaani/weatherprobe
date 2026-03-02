@@ -1,3 +1,14 @@
+/*
+ * sensor_bme280.c -- BME280 I2C driver with Bosch compensation.
+ *
+ * Uses the ESP-IDF v5 I2C master API.  On init the driver reads 26 bytes
+ * of factory calibration data from the sensor, then on each read triggers
+ * a single forced-mode conversion and applies the Bosch integer
+ * compensation algorithms for temperature, pressure, and humidity.
+ *
+ * Reference: Bosch BME280 datasheet, section 4.2.3 "Compensation formulae"
+ */
+
 #include "sensor_bme280.h"
 #include "config.h"
 #include "driver/i2c_master.h"
@@ -10,6 +21,7 @@ static const char *TAG = "BME280";
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 
+/* Per-device calibration coefficients (read from registers 0x88..0xA1, 0xE1..0xE7) */
 typedef struct {
     uint16_t dig_T1; int16_t dig_T2; int16_t dig_T3;
     uint16_t dig_P1; int16_t dig_P2; int16_t dig_P3;
@@ -20,8 +32,10 @@ typedef struct {
 } bme280_calib_t;
 
 static bme280_calib_t cal;
-static int32_t t_fine;
+static int32_t t_fine;              /* shared between T and P/H compensation */
 static bool s_calibrated = false;
+
+/* ---- Low-level register helpers ---- */
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val)
 {
@@ -34,6 +48,13 @@ static esp_err_t reg_read(uint8_t reg, uint8_t *out, size_t len)
     return i2c_master_transmit_receive(s_dev, &reg, 1, out, len, 100);
 }
 
+/* ---- Calibration data ---- */
+
+/*
+ * read_calibration -- Read and unpack the factory trimming parameters.
+ * Temperature and pressure coefficients occupy registers 0x88-0xA1.
+ * Humidity coefficients are split across 0xA1 and 0xE1-0xE7.
+ */
 static esp_err_t read_calibration(void)
 {
     uint8_t buf[26];
@@ -69,6 +90,9 @@ static esp_err_t read_calibration(void)
     return ESP_OK;
 }
 
+/* ---- Bosch compensation functions (integer arithmetic) ---- */
+
+/* Returns temperature in hundredths of degrees Celsius and sets t_fine */
 static int32_t compensate_T(int32_t adc_T)
 {
     int32_t var1 = ((((adc_T >> 3) - ((int32_t)cal.dig_T1 << 1))) *
@@ -80,6 +104,7 @@ static int32_t compensate_T(int32_t adc_T)
     return (t_fine * 5 + 128) >> 8;
 }
 
+/* Returns pressure in Pa as Q24.8 fixed-point (divide by 256 for Pa) */
 static uint32_t compensate_P(int32_t adc_P)
 {
     int64_t var1 = (int64_t)t_fine - 128000;
@@ -98,6 +123,7 @@ static uint32_t compensate_P(int32_t adc_P)
     return (uint32_t)p;
 }
 
+/* Returns humidity in Q22.10 fixed-point (divide by 1024 for %RH) */
 static uint32_t compensate_H(int32_t adc_H)
 {
     int32_t v = t_fine - 76800;
@@ -111,6 +137,8 @@ static uint32_t compensate_H(int32_t adc_H)
     v = (v > 419430400) ? 419430400 : v;
     return (uint32_t)(v >> 12);
 }
+
+/* ---- Public API ---- */
 
 void bme280_init(void)
 {
@@ -131,14 +159,14 @@ void bme280_init(void)
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev));
 
-    // Verify chip ID
+    /* Verify chip ID (BME280 = 0x60) */
     uint8_t chip_id;
     reg_read(0xD0, &chip_id, 1);
     if (chip_id != 0x60) {
         ESP_LOGE(TAG, "Unexpected chip ID: 0x%02x (expected 0x60)", chip_id);
     }
 
-    // Soft reset
+    /* Soft-reset the sensor before reading calibration */
     reg_write(0xE0, 0xB6);
     vTaskDelay(pdMS_TO_TICKS(10));
 
@@ -159,11 +187,16 @@ bme280_reading_t bme280_read(void)
         return r;
     }
 
-    // Trigger forced measurement: osrs_h=x1, osrs_t=x1, osrs_p=x1, mode=forced
+    /*
+     * Trigger a single forced measurement:
+     *   ctrl_hum  (0xF2) = osrs_h x1
+     *   ctrl_meas (0xF4) = osrs_t x1 | osrs_p x1 | mode forced
+     */
     reg_write(0xF2, 0x01);
     reg_write(0xF4, (0x01 << 5) | (0x01 << 2) | 0x01);
     vTaskDelay(pdMS_TO_TICKS(10));
 
+    /* Read 8 raw data bytes: pressure[0:2], temperature[3:5], humidity[6:7] */
     uint8_t raw[8];
     esp_err_t err = reg_read(0xF7, raw, 8);
     if (err != ESP_OK) {
@@ -175,6 +208,7 @@ bme280_reading_t bme280_read(void)
     int32_t adc_T = ((int32_t)raw[3] << 12) | ((int32_t)raw[4] << 4) | (raw[5] >> 4);
     int32_t adc_H = ((int32_t)raw[6] << 8) | raw[7];
 
+    /* Compensate in T -> P -> H order (P and H depend on t_fine) */
     int32_t t_raw = compensate_T(adc_T);
     uint32_t p_raw = compensate_P(adc_P);
     uint32_t h_raw = compensate_H(adc_H);
