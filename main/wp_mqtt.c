@@ -5,13 +5,11 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "mqtt_client.h"
+#include "esp_tls.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
 static const char *TAG = "MQTT";
-
-extern const uint8_t mqtt_ca_pem_start[] asm("_binary_isrg_root_x1_pem_start");
-extern const uint8_t mqtt_ca_pem_end[]   asm("_binary_isrg_root_x1_pem_end");
 
 #define WIFI_CONNECTED_BIT BIT0
 #define MQTT_CONNECTED_BIT BIT0
@@ -21,6 +19,7 @@ extern const uint8_t mqtt_ca_pem_end[]   asm("_binary_isrg_root_x1_pem_end");
 static EventGroupHandle_t s_wifi_eg;
 static EventGroupHandle_t s_mqtt_eg;
 static esp_mqtt_client_handle_t s_client;
+static char s_topic[128];
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                 int32_t id, void *data)
@@ -59,7 +58,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
-bool wifi_connect(void)
+bool wifi_connect(const device_credentials_t *creds)
 {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -81,12 +80,10 @@ bool wifi_connect(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                 wifi_event_handler, NULL));
 
-    wifi_config_t sta_cfg = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-        },
-    };
+    wifi_config_t sta_cfg = {0};
+    strncpy((char *)sta_cfg.sta.ssid, creds->wifi_ssid, sizeof(sta_cfg.sta.ssid) - 1);
+    strncpy((char *)sta_cfg.sta.password, creds->wifi_pass, sizeof(sta_cfg.sta.password) - 1);
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -111,19 +108,20 @@ void wifi_disconnect(void)
     vEventGroupDelete(s_wifi_eg);
 }
 
-bool mqtt_connect(void)
+bool mqtt_connect(const device_credentials_t *creds, const char *topic)
 {
     s_mqtt_eg = xEventGroupCreate();
+    strncpy(s_topic, topic, sizeof(s_topic) - 1);
 
     const esp_mqtt_client_config_t cfg = {
         .broker = {
-            .address.uri = MQTT_BROKER_URI,
-            .verification.certificate = (const char *)mqtt_ca_pem_start,
+            .address.uri = creds->mqtt_uri,
+            .verification.crt_bundle_attach = esp_crt_bundle_attach,
         },
         .credentials = {
-            .username = MQTT_USERNAME,
-            .authentication.password = MQTT_PASSWORD,
-            .client_id = MQTT_CLIENT_ID,
+            .username = creds->mqtt_user,
+            .authentication.password = creds->mqtt_pass,
+            .client_id = creds->mqtt_client_id,
         },
         .session.keepalive = 30,
     };
@@ -148,7 +146,7 @@ bool mqtt_publish(const char *payload, size_t len)
 {
     xEventGroupClearBits(s_mqtt_eg, MQTT_PUBLISHED_BIT | MQTT_FAILED_BIT);
 
-    int msg_id = esp_mqtt_client_publish(s_client, MQTT_TOPIC,
+    int msg_id = esp_mqtt_client_publish(s_client, s_topic,
                                           payload, (int)len, 1, 0);
     if (msg_id < 0) {
         ESP_LOGE(TAG, "Publish failed");

@@ -1,17 +1,11 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// WiFi
-#define WIFI_SSID           "YOUR_SSID"
-#define WIFI_PASS           "YOUR_PASSWORD"
+// WiFi — credentials loaded from NVS at runtime (see provision.sh)
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
-// MQTT - for production, embed CA cert and set broker.verification.certificate
-#define MQTT_BROKER_URI     "mqtts://broker.hivemq.com:8883"
-#define MQTT_USERNAME       "your_user"
-#define MQTT_PASSWORD       "your_pass"
-#define MQTT_TOPIC          "weatherprobe/weatherprobe-01/data"
-#define MQTT_CLIENT_ID      "weatherprobe-01"
+// MQTT — broker URI and credentials loaded from NVS at runtime
+#define MQTT_TOPIC_FMT      "weatherprobe/%s/data"
 
 // Device
 #define DEVICE_ID           "weatherprobe-01"
